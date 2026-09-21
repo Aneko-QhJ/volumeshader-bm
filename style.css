@@ -1,14 +1,24 @@
+html {
+    height: 100%;
+}
+
 body {
     background: #131115;
     overflow-x: hidden;
     overflow-y: hidden;
     height: 100vh;
+    height: 100dvh;
+    /* 移动端：交给页面自己处理手势，避免滚动、下拉刷新和双击缩放抢事件 */
+    touch-action: none;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
 }
 #c1 {
     background: #fbf7fe;
     position: fixed;
     left: 0px;
     top: 0px;
+    touch-action: none;
 }
 #btn {
     position: fixed;
@@ -26,4 +36,19 @@ body {
     left: 0px;
     top: 30px;
     display: none;
+}
+#fps {
+    position: fixed;
+    right: 8px;
+    top: 8px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(19, 17, 21, 0.6);
+    color: #d7d3de;
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: nowrap;
+    pointer-events: none;
+    -webkit-user-select: none;
+    user-select: none;
+    z-index: 1;
 }
