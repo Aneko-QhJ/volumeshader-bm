@@ -14,6 +14,15 @@
     </div>
     <button id="btn">CONFIG</button>
     <div id="config">
+      <label for="backend">渲染后端</label>
+      <select id="backend">
+        <option value="auto">自动（优先 WebGPU）</option>
+        <option value="webgpu">WebGPU</option>
+        <option value="webgl">WebGL</option>
+      </select>
+      <p id="backend-status" role="status">正在初始化…</p>
+      <label for="kernel">Kernel（<span id="kernel-language">--</span>）</label>
+      <br />
       <textarea name="" id="kernel" cols="30" rows="10"></textarea>
       <br />
       <button id="apply">APPLY</button>

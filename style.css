@@ -36,6 +36,19 @@ body {
     left: 0px;
     top: 30px;
     display: none;
+    max-width: calc(100vw - 16px);
+    padding: 8px;
+    background: rgba(19, 17, 21, 0.9);
+    color: #d7d3de;
+}
+#backend-status {
+    max-width: 420px;
+    overflow-wrap: anywhere;
+}
+#kernel {
+    width: min(560px, calc(100vw - 36px));
+    height: 260px;
+    font-family: monospace;
 }
 #fps {
     position: fixed;

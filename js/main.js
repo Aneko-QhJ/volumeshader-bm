@@ -1,33 +1,41 @@
-// 应用层：加载着色器文件、装配 WebGL 渲染器、驱动渲染循环、绑定 CONFIG 面板。
-
+// 应用层：选择渲染后端、加载着色器、驱动完成同步的渲染循环与 CONFIG 面板。
 import { Camera, bindControls, POSITIONS } from "./camera.js";
 import { FpsMeter } from "./fps.js";
 import { GLRenderer } from "./webgl.js";
+import { GPURenderer } from "./webgpu.js";
 
 const SHADER_FILES = {
     vertex: "../shaders/vertex.glsl",
     fragment: "../shaders/fragment.glsl",
-    kernel: "../shaders/kernel.glsl",
+    webgl: "../shaders/kernel.glsl",
+    volume: "../shaders/volume.wgsl",
+    webgpu: "../shaders/kernel.wgsl",
 };
-
 const camera = new Camera();
-const canvas = document.getElementById("c1");
-const fps = new FpsMeter(document.getElementById("fps"));
+let canvas = document.getElementById("c1");
+const fpsElement = document.getElementById("fps");
+let fps = new FpsMeter(fpsElement);
 const sources = {};
-let kernel = "";
+const kernels = {};
 let renderer = null;
+let backend = "";
+let recovering = false;
+const backendSelect = document.getElementById("backend");
+const backendStatus = document.getElementById("backend-status");
+const kernelBox = document.getElementById("kernel");
+const applyButton = document.getElementById("apply");
 
-function loadShader(name) {
+async function loadShader(name) {
+    if (sources[name] !== undefined) return sources[name];
     const url = new URL(SHADER_FILES[name], import.meta.url);
-    return fetch(url).then(function (response) {
-        if (!response.ok) {
-            throw new Error(`无法读取 ${url.pathname}（HTTP ${response.status}）`);
-        }
-        return response.text();
-    });
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`无法读取 ${url.pathname}（HTTP ${response.status}）`);
+    }
+    sources[name] = await response.text();
+    return sources[name];
 }
 
-// 页面按短边等比缩放整个 1024x1024 舞台。
 function fitToScreen() {
     const size = camera.setViewportSize(document.body.clientWidth, document.body.clientHeight);
     const main = document.getElementById("main");
@@ -36,92 +44,166 @@ function fitToScreen() {
     main.style.transform = "scale(" + size / canvas.width + "," + size / canvas.height + ")";
 }
 
-function renderFrame() {
-    if (!renderer) {
-        return;
-    }
-    renderer.setViewFrame(camera.getViewFrame());
-    renderer.draw();
+function resetFps() {
+    fps = new FpsMeter(fpsElement);
+    fpsElement.textContent = "-- FPS";
 }
 
-function onTimer(now) {
-    fps.tick(now);
-    camera.ang1 += 0.01;
-    renderFrame();
+async function onTimer() {
+    const active = renderer;
+    if (active) {
+        try {
+            camera.ang1 += 0.01;
+            active.setViewFrame(camera.getViewFrame());
+            await active.draw();
+            if (renderer === active) fps.tick(performance.now());
+        } catch (error) {
+            if (renderer === active) {
+                if (backend === "webgpu") await fallbackToWebGL(error);
+                else {
+                    renderer = null;
+                    backendStatus.textContent = "WebGL 绘制失败：" + error.message;
+                    resetFps();
+                }
+            }
+        }
+    }
     window.requestAnimationFrame(onTimer);
 }
 
-// 编译着色器、建缓冲并完成一次视口适配。
-function createRenderer() {
-    renderer = new GLRenderer(canvas);
-    renderer.init(sources.vertex, sources.fragment, kernel, POSITIONS);
-    fitToScreen();
+// 同一个 canvas 不能切换上下文类型，回退前必须替换元素。
+function replaceCanvas() {
+    const next = canvas.cloneNode(false);
+    canvas.replaceWith(next);
+    canvas = next;
 }
 
-// 移动端切后台、GPU 重置都可能丢上下文。必须 preventDefault，浏览器才会尝试恢复；
-// 恢复后 program 和 buffer 都已失效，需要整个重建。
-function handleContextLoss() {
-    canvas.addEventListener("webglcontextlost", function (ev) {
-        ev.preventDefault();
+function showBackend(message) {
+    backendStatus.textContent = message;
+    document.getElementById("kernel-language").textContent = backend === "webgpu" ? "WGSL" : "GLSL";
+    kernelBox.value = kernels[backend];
+    resetFps();
+}
+
+async function createWebGL(message = "WebGL", bindEvents = true) {
+    const [vertex, fragment, kernel] = await Promise.all([
+        loadShader("vertex"), loadShader("fragment"), loadShader("webgl"),
+    ]);
+    if (kernels.webgl === undefined) kernels.webgl = kernel;
+    const next = new GLRenderer(canvas);
+    next.init(vertex, fragment, kernels.webgl, POSITIONS);
+    renderer = next;
+    backend = "webgl";
+    fitToScreen();
+    showBackend(message);
+    if (!bindEvents) return;
+    canvas.addEventListener("webglcontextlost", function (event) {
+        event.preventDefault();
         renderer = null;
-    }, false);
+        backendStatus.textContent = "WebGL 上下文丢失，等待恢复…";
+        resetFps();
+    });
     canvas.addEventListener("webglcontextrestored", function () {
-        createRenderer();
-    }, false);
+        createWebGL("WebGL", false).catch(reportError);
+    });
+}
+
+async function fallbackToWebGL(error) {
+    if (recovering) return;
+    recovering = true;
+    const previous = renderer;
+    renderer = null;
+    backendStatus.textContent = "正在回退到 WebGL…";
+    resetFps();
+    if (previous instanceof GPURenderer) previous.dispose();
+    try {
+        replaceCanvas();
+        await createWebGL("WebGL（WebGPU 不可用：" + error.message + "）");
+    } catch (fallbackError) {
+        reportError(fallbackError);
+    } finally {
+        recovering = false;
+    }
+}
+
+function reportError(error) {
+    console.error(error);
+    backendStatus.textContent = "渲染失败：" + error.message;
+    alert("渲染失败:\n\n" + error.message);
 }
 
 function initConfigUI() {
     const config = document.getElementById("config");
     const button = document.getElementById("btn");
-    const kernelBox = document.getElementById("kernel");
-    kernelBox.value = kernel;
-
     button.addEventListener("click", function () {
-        const show = this.innerText == "CONFIG";
+        const show = this.innerText === "CONFIG";
         this.innerText = show ? "HIDE" : "CONFIG";
         config.style.display = show ? "inline" : "none";
     });
-
-    // 重新编译失败时保留原来的程序，画面不会变黑。
-    document.getElementById("apply").addEventListener("click", function () {
-        if (!renderer) {
-            return;
+    applyButton.addEventListener("click", async function () {
+        const active = renderer;
+        if (!active || recovering) return;
+        const languageBackend = backend;
+        const candidate = kernelBox.value;
+        applyButton.disabled = true;
+        try {
+            const result = languageBackend === "webgpu"
+                ? await active.buildProgram(sources.volume, candidate)
+                : active.buildProgram(sources.vertex, sources.fragment, candidate);
+            if (renderer !== active) return;
+            if (!result.ok) {
+                alert(result.info);
+                return;
+            }
+            kernels[languageBackend] = candidate;
+            resetFps();
+        } catch (error) {
+            alert(error.message);
+        } finally {
+            applyButton.disabled = false;
         }
-        const result = renderer.buildProgram(sources.vertex, sources.fragment, kernelBox.value);
-        if (!result.ok) {
-            alert(result.info);
-            return;
-        }
-        kernel = kernelBox.value;
     });
-
     document.getElementById("cancel").addEventListener("click", function () {
-        kernelBox.value = kernel;
+        kernelBox.value = kernels[backend] || "";
+    });
+    // 重新加载确保不同后端拥有独立的设备、上下文和统计窗口。
+    backendSelect.addEventListener("change", function () {
+        const url = new URL(location.href);
+        url.searchParams.set("backend", backendSelect.value);
+        location.assign(url);
     });
 }
 
 async function main() {
     if (location.protocol === "file:") {
-        alert("检测到以 file:// 直接打开页面。\n浏览器不允许本地页面读取着色器文件，请改用本地 HTTP 服务，例如：\n\npython3 -m http.server\n\n然后访问 http://localhost:8000/");
-        return;
+        throw new Error("请使用 HTTP 服务加载着色器，例如 python3 -m http.server，然后访问 http://localhost:8000/");
     }
-
-    const [vertex, fragment, kernelSource] = await Promise.all([
-        loadShader("vertex"),
-        loadShader("fragment"),
-        loadShader("kernel"),
-    ]);
-    sources.vertex = vertex;
-    sources.fragment = fragment;
-    kernel = kernelSource;
-
-    createRenderer();
-    renderFrame();
-
+    const requested = new URLSearchParams(location.search).get("backend");
+    const mode = ["webgl", "webgpu"].includes(requested) ? requested : "auto";
+    backendSelect.value = mode;
+    initConfigUI();
+    if (mode !== "webgl") {
+        try {
+            const [volume, kernel] = await Promise.all([loadShader("volume"), loadShader("webgpu")]);
+            kernels.webgpu = kernel;
+            const next = await GPURenderer.create(canvas, volume, kernel);
+            renderer = next;
+            backend = "webgpu";
+            fitToScreen();
+            showBackend("WebGPU");
+            next.device.lost.then(info => {
+                if (renderer === next && !next.disposed) {
+                    void fallbackToWebGL(new Error("设备丢失：" + info.message));
+                }
+            });
+        } catch (error) {
+            await fallbackToWebGL(error);
+        }
+    } else {
+        await createWebGL();
+    }
     window.addEventListener("resize", fitToScreen, false);
     bindControls(camera);
-    handleContextLoss();
-    initConfigUI();
     window.requestAnimationFrame(onTimer);
 }
 
@@ -129,7 +211,4 @@ alert("Trigonometric and inverse trigonometric functions test.\n" +
       "Created by cznull\n" +
       "Modified by livcm");
 
-main().catch(function (err) {
-    console.error(err);
-    alert("初始化失败:\n\n" + err.message);
-});
+main().catch(reportError);
